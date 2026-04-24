@@ -1,0 +1,579 @@
+﻿const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+const fs = require("fs");
+const fsp = fs.promises;
+const http = require("http");
+const os = require("os");
+const path = require("path");
+const { URL } = require("url");
+
+const APP_HTML = path.join(__dirname, "BB_Inventor_PRO.html");
+const APP_ROOT = __dirname;
+const BOOTSTRAP_JS = path.join(__dirname, "electron-bootstrap.js");
+
+let mainWindow = null;
+let localServer = null;
+let serverState = {
+    running: false,
+    port: 3001,
+    ip: "127.0.0.1"
+};
+
+function defaultServerConfig() {
+    return {
+        username: "admin",
+        password: "changeme",
+        token: "",
+        port: 3001
+    };
+}
+
+function appDocumentsRoot() {
+    return path.join(app.getPath("documents"), "BB Inventor Pro");
+}
+
+function defaultExportDir() {
+    return path.join(appDocumentsRoot(), "Exports");
+}
+
+function defaultImportDir() {
+    return path.join(appDocumentsRoot(), "Imports");
+}
+
+function folderPrefsPath() {
+    return path.join(app.getPath("userData"), "folder-preferences.json");
+}
+
+function defaultFolderPrefs() {
+    return {
+        exportPath: defaultExportDir(),
+        importPath: defaultImportDir()
+    };
+}
+
+function normalizeFolderPath(value, fallback) {
+    const trimmed = String(value || "").trim();
+    return trimmed || fallback;
+}
+
+function loadFolderPrefs() {
+    try {
+        const raw = JSON.parse(fs.readFileSync(folderPrefsPath(), "utf8"));
+        return {
+            exportPath: normalizeFolderPath(raw.exportPath, defaultExportDir()),
+            importPath: normalizeFolderPath(raw.importPath, defaultImportDir())
+        };
+    } catch {
+        return defaultFolderPrefs();
+    }
+}
+
+async function ensureFolderExists(dirPath) {
+    await fsp.mkdir(dirPath, { recursive: true });
+}
+
+async function saveFolderPrefs(config = {}) {
+    const next = {
+        exportPath: normalizeFolderPath(config.exportPath, defaultExportDir()),
+        importPath: normalizeFolderPath(config.importPath, defaultImportDir())
+    };
+
+    await ensureFolderExists(next.exportPath);
+    await ensureFolderExists(next.importPath);
+    await fsp.mkdir(path.dirname(folderPrefsPath()), { recursive: true });
+    await fsp.writeFile(folderPrefsPath(), JSON.stringify(next, null, 2), "utf8");
+    return next;
+}
+
+async function ensureDefaultDirs() {
+    const prefs = loadFolderPrefs();
+    await ensureFolderExists(prefs.exportPath);
+    await ensureFolderExists(prefs.importPath);
+}
+
+function serverConfigPath() {
+    return path.join(app.getPath("userData"), "server-config.json");
+}
+
+function remoteDbPath() {
+    return path.join(app.getPath("userData"), "remote-database.json");
+}
+
+function loadServerConfig() {
+    try {
+        const raw = JSON.parse(fs.readFileSync(serverConfigPath(), "utf8"));
+        return { ...defaultServerConfig(), ...raw };
+    } catch {
+        return defaultServerConfig();
+    }
+}
+
+function validateServerConfig(config) {
+    const next = { ...defaultServerConfig(), ...config };
+    next.username = String(next.username || "admin").trim();
+    next.password = String(next.password || "changeme").trim();
+    next.token = String(next.token || "").trim();
+    next.port = Number(next.port) || 3001;
+
+    if (!next.username) throw new Error("Username obbligatorio.");
+    if (next.password.length < 6) throw new Error("La password deve essere di almeno 6 caratteri.");
+    if (next.port < 1024 || next.port > 65535) throw new Error("Porta non valida.");
+
+    return next;
+}
+
+function saveServerConfig(config) {
+    const next = validateServerConfig(config);
+    fs.mkdirSync(path.dirname(serverConfigPath()), { recursive: true });
+    fs.writeFileSync(serverConfigPath(), JSON.stringify(next, null, 2), "utf8");
+    serverState.port = next.port;
+    return next;
+}
+
+function getPreferredIp() {
+    const nets = os.networkInterfaces();
+    for (const entries of Object.values(nets)) {
+        for (const entry of entries || []) {
+            if (entry && entry.family === "IPv4" && !entry.internal) {
+                return entry.address;
+            }
+        }
+    }
+    return "127.0.0.1";
+}
+
+function sendMenuAction(action) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("menu-action", action);
+    }
+}
+
+function isSubPath(filePath, rootPath) {
+    const rel = path.relative(rootPath, filePath);
+    return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function contentType(filePath) {
+    switch (path.extname(filePath).toLowerCase()) {
+        case ".html": return "text/html; charset=utf-8";
+        case ".js": return "application/javascript; charset=utf-8";
+        case ".css": return "text/css; charset=utf-8";
+        case ".json": return "application/json; charset=utf-8";
+        case ".png": return "image/png";
+        case ".jpg":
+        case ".jpeg": return "image/jpeg";
+        case ".svg": return "image/svg+xml";
+        case ".ico": return "image/x-icon";
+        default: return "application/octet-stream";
+    }
+}
+
+function setCorsHeaders(res) {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, PUT, OPTIONS");
+}
+
+function writeJson(res, statusCode, payload) {
+    setCorsHeaders(res);
+    res.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload));
+}
+
+function unauthorized(res) {
+    setCorsHeaders(res);
+    res.writeHead(401, {
+        "WWW-Authenticate": 'Basic realm="BB Inventor Pro"',
+        "Content-Type": "application/json; charset=utf-8"
+    });
+    res.end(JSON.stringify({ error: "Unauthorized" }));
+}
+
+function basicCredentials(req) {
+    const header = req.headers.authorization || "";
+    if (!header.startsWith("Basic ")) return null;
+
+    try {
+        const decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+        const idx = decoded.indexOf(":");
+        if (idx < 0) return null;
+        return {
+            username: decoded.slice(0, idx),
+            password: decoded.slice(idx + 1)
+        };
+    } catch {
+        return null;
+    }
+}
+
+function isBasicAuthorized(req, config) {
+    const creds = basicCredentials(req);
+    return Boolean(creds && creds.username === config.username && creds.password === config.password);
+}
+
+function isApiAuthorized(req, config) {
+    const header = req.headers.authorization || "";
+    if (config.token && header === "Bearer " + config.token) return true;
+    return isBasicAuthorized(req, config);
+}
+
+function readBody(req) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let size = 0;
+
+        req.on("data", chunk => {
+            size += chunk.length;
+            if (size > 5 * 1024 * 1024) {
+                reject(new Error("Body troppo grande."));
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+
+        req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        req.on("error", reject);
+    });
+}
+
+async function readRemoteDb() {
+    try {
+        const raw = await fsp.readFile(remoteDbPath(), "utf8");
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+        if (err.code === "ENOENT") return [];
+        throw err;
+    }
+}
+
+async function writeRemoteDb(data) {
+    if (!Array.isArray(data)) throw new Error("Il database remoto deve essere un array JSON.");
+    await fsp.mkdir(path.dirname(remoteDbPath()), { recursive: true });
+    await fsp.writeFile(remoteDbPath(), JSON.stringify(data, null, 2), "utf8");
+}
+
+async function injectedHtml() {
+    const html = await fsp.readFile(APP_HTML, "utf8");
+    const bootstrap = [
+        "<script>",
+        "window.__BB_REMOTE_BOOTSTRAP = {",
+        "  mode: 'http',",
+        "  httpUrl: window.location.origin + '/api',",
+        "  httpToken: '',",
+        "  autoload: true",
+        "};",
+        "</script>"
+    ].join("");
+
+    return html.includes("</head>")
+        ? html.replace("</head>", bootstrap + "\n</head>")
+        : bootstrap + "\n" + html;
+}
+
+async function injectElectronBootstrap() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+        const script = await fsp.readFile(BOOTSTRAP_JS, "utf8");
+        await mainWindow.webContents.executeJavaScript(script);
+    } catch (err) {
+        console.error("[electron-bootstrap]", err);
+    }
+}
+
+async function handleApi(req, res, urlObj, config) {
+    if (req.method === "OPTIONS") {
+        setCorsHeaders(res);
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
+    if (!isApiAuthorized(req, config)) {
+        unauthorized(res);
+        return;
+    }
+
+    if (req.method === "GET" && urlObj.pathname === "/api/ping") {
+        writeJson(res, 200, { ok: true, running: true, port: serverState.port });
+        return;
+    }
+
+    if (req.method === "GET" && urlObj.pathname === "/api/db") {
+        const data = await readRemoteDb();
+        writeJson(res, 200, data);
+        return;
+    }
+
+    if (req.method === "PUT" && urlObj.pathname === "/api/db") {
+        const body = await readBody(req);
+        const parsed = JSON.parse(body || "[]");
+        await writeRemoteDb(parsed);
+        writeJson(res, 200, { success: true });
+        return;
+    }
+
+    writeJson(res, 404, { error: "Not found" });
+}
+
+async function handleStatic(req, res, urlObj, config) {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+        res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Method Not Allowed");
+        return;
+    }
+
+    if (!isBasicAuthorized(req, config)) {
+        unauthorized(res);
+        return;
+    }
+
+    if (urlObj.pathname === "/" || urlObj.pathname === "/index.html") {
+        const html = await injectedHtml();
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(req.method === "HEAD" ? "" : html);
+        return;
+    }
+
+    const decodedPath = decodeURIComponent(urlObj.pathname).replace(/^\/+/, "");
+    const filePath = path.normalize(path.join(APP_ROOT, decodedPath));
+    if (!isSubPath(filePath, APP_ROOT)) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Forbidden");
+        return;
+    }
+
+    try {
+        const stat = await fsp.stat(filePath);
+        if (!stat.isFile()) {
+            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+            res.end("Not Found");
+            return;
+        }
+
+        res.writeHead(200, { "Content-Type": contentType(filePath) });
+        if (req.method === "HEAD") {
+            res.end();
+            return;
+        }
+        fs.createReadStream(filePath).pipe(res);
+    } catch {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not Found");
+    }
+}
+
+async function routeRequest(req, res) {
+    const config = loadServerConfig();
+    const urlObj = new URL(req.url, "http://127.0.0.1");
+
+    if (urlObj.pathname.startsWith("/api/")) {
+        await handleApi(req, res, urlObj, config);
+        return;
+    }
+
+    await handleStatic(req, res, urlObj, config);
+}
+
+async function stopLocalServerInternal() {
+    if (!localServer) {
+        serverState.running = false;
+        return { success: true };
+    }
+
+    const server = localServer;
+    await new Promise((resolve, reject) => {
+        server.close(err => err ? reject(err) : resolve());
+    });
+    localServer = null;
+    serverState.running = false;
+    sendMenuAction("serverStopped");
+    return { success: true };
+}
+
+async function startLocalServerInternal() {
+    const config = loadServerConfig();
+
+    if (localServer && serverState.running && serverState.port === config.port) {
+        return { success: true, running: true, port: serverState.port, ip: serverState.ip };
+    }
+
+    if (localServer) {
+        await stopLocalServerInternal();
+    }
+
+    const server = http.createServer((req, res) => {
+        routeRequest(req, res).catch(err => {
+            console.error("[server]", err);
+            writeJson(res, 500, { error: err.message || "Internal server error" });
+        });
+    });
+
+    await new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(config.port, "0.0.0.0", resolve);
+    });
+
+    localServer = server;
+    serverState = {
+        running: true,
+        port: config.port,
+        ip: getPreferredIp()
+    };
+    sendMenuAction("serverStarted:" + serverState.port + ":" + serverState.ip);
+    return { success: true, running: true, port: serverState.port, ip: serverState.ip };
+}
+
+function createWindow() {
+    mainWindow = new BrowserWindow({
+        width: 1600,
+        height: 980,
+        minWidth: 1280,
+        minHeight: 800,
+        backgroundColor: "#080808",
+        webPreferences: {
+            preload: path.join(__dirname, "preload.js"),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: false
+        }
+    });
+
+    mainWindow.webContents.on("did-finish-load", () => {
+        injectElectronBootstrap();
+    });
+
+    mainWindow.loadFile(APP_HTML);
+}
+
+app.whenReady().then(async () => {
+    await ensureDefaultDirs();
+
+    ipcMain.handle("server:get-config", async () => loadServerConfig());
+    ipcMain.handle("server:set-config", async (_event, config) => {
+        try {
+            saveServerConfig(config);
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("server:start", async () => {
+        try {
+            return await startLocalServerInternal();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("server:stop", async () => {
+        try {
+            return await stopLocalServerInternal();
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("server:status", async () => ({
+        running: serverState.running,
+        port: serverState.running ? serverState.port : loadServerConfig().port,
+        ip: getPreferredIp()
+    }));
+    ipcMain.handle("fs:read-file", async (_event, filePath, encoding = "utf8") => {
+        try {
+            const data = await fsp.readFile(filePath, encoding || undefined);
+            return { success: true, data };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("fs:write-file", async (_event, filePath, data, encoding = "utf8") => {
+        try {
+            await fsp.mkdir(path.dirname(filePath), { recursive: true });
+            await fsp.writeFile(filePath, data, encoding || undefined);
+            return { success: true };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
+    ipcMain.handle("folders:set-config", async (_event, config) => {
+        try {
+            const saved = await saveFolderPrefs(config || {});
+            return { success: true, ...saved };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("dialog:pick-directory", async (_event, payload = {}) => {
+        try {
+            const result = await dialog.showOpenDialog({
+                title: "Seleziona cartella",
+                defaultPath: String(payload.defaultPath || "").trim() || appDocumentsRoot(),
+                properties: ["openDirectory", "createDirectory"]
+            });
+
+            if (result.canceled || !result.filePaths?.length) return { canceled: true };
+            return { success: true, path: result.filePaths[0] };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("dialog:save-buffer", async (_event, payload = {}) => {
+        try {
+            const prefs = loadFolderPrefs();
+            await ensureFolderExists(prefs.exportPath);
+
+            const result = await dialog.showSaveDialog({
+                title: "Salva file",
+                defaultPath: path.join(prefs.exportPath, payload.defaultFileName || "export.bin"),
+                filters: Array.isArray(payload.filters) ? payload.filters : []
+            });
+
+            if (result.canceled || !result.filePath) return { canceled: true };
+
+            await fsp.mkdir(path.dirname(result.filePath), { recursive: true });
+            await fsp.writeFile(result.filePath, Buffer.from(payload.bytes || []));
+            return { success: true, filePath: result.filePath };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("dialog:open-json", async () => {
+        try {
+            const prefs = loadFolderPrefs();
+            await ensureFolderExists(prefs.importPath);
+
+            const result = await dialog.showOpenDialog({
+                title: "Carica file JSON",
+                defaultPath: prefs.importPath,
+                filters: [{ name: "JSON", extensions: ["json"] }],
+                properties: ["openFile"]
+            });
+
+            if (result.canceled || !result.filePaths?.length) return { canceled: true };
+
+            const filePath = result.filePaths[0];
+            const data = await fsp.readFile(filePath, "utf8");
+            return {
+                success: true,
+                filePath,
+                name: path.basename(filePath),
+                data
+            };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("ftp:test", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
+    ipcMain.handle("ftp:download", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
+    ipcMain.handle("ftp:upload", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
+
+    createWindow();
+
+    app.on("activate", () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+});
+
+app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+});

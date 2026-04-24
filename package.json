@@ -1,0 +1,14 @@
+﻿{
+  "name": "bb-inventor-pro",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop wrapper Electron per BB Inventor Pro",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "electron": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^41.0.0"
+  }
+}

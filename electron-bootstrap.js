@@ -1,0 +1,253 @@
+﻿(() => {
+    if (!window.electronAPI) return;
+
+    function inferFilters(filename) {
+        const ext = String(filename || "").split(".").pop().toLowerCase();
+        if (ext === "csv") return [{ name: "CSV", extensions: ["csv"] }];
+        if (ext === "pdf") return [{ name: "PDF", extensions: ["pdf"] }];
+        if (ext === "xlsx") return [{ name: "Excel", extensions: ["xlsx"] }];
+        if (ext === "json") return [{ name: "JSON", extensions: ["json"] }];
+        return [{ name: "File", extensions: [ext || "*"] }];
+    }
+
+    async function saveBytes(bytes, filename, filters) {
+        return window.electronAPI.saveBufferDialog({
+            defaultFileName: filename || "download.bin",
+            bytes: Array.from(bytes || []),
+            filters: filters || inferFilters(filename)
+        });
+    }
+
+    async function saveBlob(blob, filename) {
+        const arrayBuffer = await blob.arrayBuffer();
+        return saveBytes(new Uint8Array(arrayBuffer), filename, inferFilters(filename));
+    }
+
+    const originalDownload = window.download;
+    window.download = function(blob, filename) {
+        if (!(blob instanceof Blob)) {
+            if (typeof originalDownload === "function") return originalDownload(blob, filename);
+            return;
+        }
+
+        saveBlob(blob, filename).catch(err => {
+            console.error("[electron-bootstrap] saveBlob", err);
+            if (typeof toast === "function") toast("Errore salvataggio file: " + err.message, "error");
+        });
+    };
+
+    function patchXlsx() {
+        if (!window.XLSX || window.XLSX.__bbElectronPatched) return;
+        const xlsx = window.XLSX;
+        const originalWriteFile = xlsx.writeFile.bind(xlsx);
+
+        xlsx.writeFile = function(workbook, filename, options) {
+            try {
+                const ext = String(filename || "export.xlsx").split(".").pop().toLowerCase();
+                const bookType = ext === "xls" ? "xls" : "xlsx";
+                const array = xlsx.write(workbook, { ...(options || {}), bookType, type: "array" });
+                saveBytes(new Uint8Array(array), filename || "export.xlsx", inferFilters(filename)).catch(err => {
+                    console.error("[electron-bootstrap] writeFile", err);
+                    if (typeof toast === "function") toast("Errore salvataggio Excel: " + err.message, "error");
+                });
+                return true;
+            } catch (err) {
+                console.error("[electron-bootstrap] writeFile fallback", err);
+                return originalWriteFile(workbook, filename, options);
+            }
+        };
+
+        xlsx.__bbElectronPatched = true;
+    }
+
+    function patchJsPdf() {
+        const api = window.jspdf?.jsPDF?.API;
+        if (!api || api.__bbElectronPatched) return;
+
+        const originalSave = api.save;
+        api.save = function(filename, options) {
+            try {
+                const arrayBuffer = this.output("arraybuffer");
+                saveBytes(new Uint8Array(arrayBuffer), filename || "export.pdf", [{ name: "PDF", extensions: ["pdf"] }]).catch(err => {
+                    console.error("[electron-bootstrap] pdfSave", err);
+                    if (typeof toast === "function") toast("Errore salvataggio PDF: " + err.message, "error");
+                });
+                return this;
+            } catch (err) {
+                console.error("[electron-bootstrap] pdfSave fallback", err);
+                return originalSave.call(this, filename, options);
+            }
+        };
+
+        api.__bbElectronPatched = true;
+    }
+
+    async function importFromDialog(event) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+        try {
+            const result = await window.electronAPI.openJsonDialog();
+            if (!result?.success) return;
+
+            const input = event.currentTarget;
+            const file = new File([result.data], result.name || "database.json", { type: "application/json" });
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            input.files = dataTransfer.files;
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+        } catch (err) {
+            console.error("[electron-bootstrap] importFromDialog", err);
+            if (typeof toast === "function") toast("Errore apertura file: " + err.message, "error");
+        }
+    }
+
+    function patchImportInput() {
+        const input = document.getElementById("importFile");
+        if (!input || input.dataset.bbElectronPatched === "1") return;
+        input.dataset.bbElectronPatched = "1";
+        input.addEventListener("click", importFromDialog, true);
+    }
+
+    function folderPanelTemplate() {
+        return `
+            <div class="panel span-2" id="bbElectronFoldersPanel" style="margin-bottom:0">
+                <div class="panel-head">
+                    <div>
+                        <h2>Cartelle file</h2>
+                        <p>Scegli le cartelle predefinite per export e import nella versione Electron.</p>
+                    </div>
+                    <div class="actions">
+                        <button class="btn" type="button" id="bbSaveFolderPrefsBtn">Salva cartelle</button>
+                    </div>
+                </div>
+
+                <div class="theme-grid">
+                    <div class="theme-field" style="grid-column: span 2;">
+                        <label for="bbExportFolderInput">Cartella export</label>
+                        <div style="display:flex; gap:8px;">
+                            <input id="bbExportFolderInput" type="text" placeholder="Seleziona cartella export" style="flex:1">
+                            <button class="btn-secondary" type="button" id="bbBrowseExportFolderBtn">Sfoglia</button>
+                        </div>
+                        <small id="bbExportFolderHint">Salvataggi CSV, PDF, Excel e JSON.</small>
+                    </div>
+
+                    <div class="theme-field" style="grid-column: span 2;">
+                        <label for="bbImportFolderInput">Cartella import</label>
+                        <div style="display:flex; gap:8px;">
+                            <input id="bbImportFolderInput" type="text" placeholder="Seleziona cartella import" style="flex:1">
+                            <button class="btn-secondary" type="button" id="bbBrowseImportFolderBtn">Sfoglia</button>
+                        </div>
+                        <small id="bbImportFolderHint">Apertura predefinita per Carica JSON.</small>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function loadFolderPrefsIntoForm() {
+        const exportInput = document.getElementById("bbExportFolderInput");
+        const importInput = document.getElementById("bbImportFolderInput");
+        if (!exportInput || !importInput) return;
+
+        try {
+            const prefs = await window.electronAPI.getFolderPrefs();
+            exportInput.value = prefs?.exportPath || "";
+            importInput.value = prefs?.importPath || "";
+        } catch (err) {
+            console.error("[electron-bootstrap] loadFolderPrefsIntoForm", err);
+        }
+    }
+
+    async function browseFolder(kind) {
+        const input = document.getElementById(kind === "export" ? "bbExportFolderInput" : "bbImportFolderInput");
+        if (!input) return;
+
+        try {
+            const result = await window.electronAPI.pickDirectory({ defaultPath: input.value || "" });
+            if (result?.success && result.path) {
+                input.value = result.path;
+            }
+        } catch (err) {
+            console.error("[electron-bootstrap] browseFolder", err);
+            if (typeof toast === "function") toast("Errore selezione cartella: " + err.message, "error");
+        }
+    }
+
+    async function saveFolderPrefsFromForm() {
+        const exportInput = document.getElementById("bbExportFolderInput");
+        const importInput = document.getElementById("bbImportFolderInput");
+        if (!exportInput || !importInput) return;
+
+        try {
+            const result = await window.electronAPI.setFolderPrefs({
+                exportPath: exportInput.value.trim(),
+                importPath: importInput.value.trim()
+            });
+
+            if (!result?.success) {
+                if (typeof toast === "function") toast("Errore salvataggio cartelle: " + (result?.error || "sconosciuto"), "error");
+                return;
+            }
+
+            exportInput.value = result.exportPath || exportInput.value;
+            importInput.value = result.importPath || importInput.value;
+            if (typeof toast === "function") toast("Cartelle predefinite salvate.", "success");
+        } catch (err) {
+            console.error("[electron-bootstrap] saveFolderPrefsFromForm", err);
+            if (typeof toast === "function") toast("Errore salvataggio cartelle: " + err.message, "error");
+        }
+    }
+
+    function ensureFolderPanel() {
+        const settingsGrid = document.querySelector("#settingsBackdrop .settings-grid");
+        if (!settingsGrid || document.getElementById("bbElectronFoldersPanel")) return;
+
+        const wrapper = document.createElement("div");
+        wrapper.innerHTML = folderPanelTemplate().trim();
+        const panel = wrapper.firstElementChild;
+        settingsGrid.appendChild(panel);
+
+        document.getElementById("bbBrowseExportFolderBtn")?.addEventListener("click", () => browseFolder("export"));
+        document.getElementById("bbBrowseImportFolderBtn")?.addEventListener("click", () => browseFolder("import"));
+        document.getElementById("bbSaveFolderPrefsBtn")?.addEventListener("click", saveFolderPrefsFromForm);
+
+        loadFolderPrefsIntoForm().catch(console.error);
+    }
+
+    function watchSettingsOpen() {
+        const backdrop = document.getElementById("settingsBackdrop");
+        if (!backdrop || backdrop.dataset.bbFolderObserver === "1") return;
+        backdrop.dataset.bbFolderObserver = "1";
+
+        const observer = new MutationObserver(() => {
+            if (backdrop.classList.contains("open")) {
+                ensureFolderPanel();
+                loadFolderPrefsIntoForm().catch(console.error);
+            }
+        });
+
+        observer.observe(backdrop, { attributes: true, attributeFilter: ["class"] });
+    }
+
+    function patchAll() {
+        patchXlsx();
+        patchJsPdf();
+        patchImportInput();
+        ensureFolderPanel();
+        watchSettingsOpen();
+    }
+
+    patchAll();
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", patchAll, { once: true });
+    }
+
+    let attempts = 0;
+    const timer = setInterval(() => {
+        patchAll();
+        attempts += 1;
+        if (attempts >= 20) clearInterval(timer);
+    }, 500);
+})();

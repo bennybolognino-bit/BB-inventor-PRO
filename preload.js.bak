@@ -1,0 +1,21 @@
+﻿const { contextBridge, ipcRenderer } = require("electron");
+
+contextBridge.exposeInMainWorld("electronAPI", {
+    getServerConfig: () => ipcRenderer.invoke("server:get-config"),
+    setServerConfig: (config) => ipcRenderer.invoke("server:set-config", config),
+    startLocalServer: () => ipcRenderer.invoke("server:start"),
+    stopLocalServer: () => ipcRenderer.invoke("server:stop"),
+    getServerStatus: () => ipcRenderer.invoke("server:status"),
+    readFile: (filePath, encoding) => ipcRenderer.invoke("fs:read-file", filePath, encoding),
+    writeFile: (filePath, data, encoding) => ipcRenderer.invoke("fs:write-file", filePath, data, encoding),
+    ftpTest: (config) => ipcRenderer.invoke("ftp:test", config),
+    ftpDownload: (config) => ipcRenderer.invoke("ftp:download", config),
+    ftpUpload: (config, data) => ipcRenderer.invoke("ftp:upload", config, data),
+    saveBufferDialog: (payload) => ipcRenderer.invoke("dialog:save-buffer", payload),
+    openJsonDialog: () => ipcRenderer.invoke("dialog:open-json"),
+    onMenuAction: (callback) => {
+        if (typeof callback !== "function") return;
+        const listener = (_event, action) => callback(action);
+        ipcRenderer.on("menu-action", listener);
+    }
+});
