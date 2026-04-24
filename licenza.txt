@@ -1,0 +1,20 @@
+ACCORDO DI LICENZA SOFTWARE GRATUITO (FREEWARE) – BB INVENTOR PRO
+
+1. CONCESSIONE DELLA LICENZA
+BB Inventor PRO viene fornito come software gratuito (Freeware). Viene concessa all'utente una licenza non esclusiva e gratuita per scaricare, installare e utilizzare il software per scopi personali, educativi o professionali.
+2. DISTRIBUZIONE
+È consentito distribuire copie esatte di BB Inventor PRO a terzi, a condizione che:
+Il pacchetto di installazione rimanga integro e originale.
+Non venga richiesto alcun compenso economico per il software stesso.
+Venga mantenuto il riferimento al legittimo proprietario.
+3. RESTRIZIONI
+L'utente non può:
+Vendere, dare in noleggio o trarre profitto diretto dalla distribuzione di BB Inventor PRO.
+Modificare, hackerare, tradurre o tentare di ricavare il codice sorgente del software.
+Utilizzare il software all'interno di attività illegali.
+4. NESSUNA GARANZIA (AS IS)
+Poiché il software è fornito gratuitamente, BB Inventor PRO viene distribuito "così com'è", senza alcuna garanzia di funzionamento o idoneità a scopi specifici. L'autore non garantisce che il software sia privo di errori.
+5. LIMITAZIONE DI RESPONSABILITÀ
+In nessun caso l'autore sarà responsabile per eventuali danni (inclusi, senza limitazioni, perdita di dati, interruzione dell'attività o malfunzionamenti del sistema) derivanti dall'uso di BB Inventor PRO, anche se avvisato della possibilità di tali danni.
+6. ACCETTAZIONE
+L'installazione e l'uso di BB Inventor PRO costituiscono l'accettazione completa dei termini di questa Licenza.
