@@ -5,8 +5,15 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { URL } = require("url");
-const { dbFilePath, ensureDbFile, readDb, writeDb } = require("./server-db");
-const { logFilePath, ensureLogFile, writeLog, readLogTail, clearLog } = require("./logger");
+const {
+    loadPersistedDatasource,
+    savePersistedDatasource,
+    loadPersistedDb,
+    savePersistedDb,
+    readServerDatabase,
+    writeServerDatabase,
+    localDbPath
+} = require("./server-datasource");
 
 const APP_HTML = path.join(__dirname, "BB_Inventor_PRO.html");
 const APP_ROOT = __dirname;
@@ -241,11 +248,20 @@ function readBody(req) {
 }
 
 async function readRemoteDb() {
-    return readDb(app);
+    try {
+        const raw = await fsp.readFile(remoteDbPath(), "utf8");
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+        if (err.code === "ENOENT") return [];
+        throw err;
+    }
 }
 
 async function writeRemoteDb(data) {
-    return writeDb(app, data);
+    if (!Array.isArray(data)) throw new Error("Il database remoto deve essere un array JSON.");
+    await fsp.mkdir(path.dirname(remoteDbPath()), { recursive: true });
+    await fsp.writeFile(remoteDbPath(), JSON.stringify(data, null, 2), "utf8");
 }
 
 async function injectedHtml() {
@@ -295,8 +311,13 @@ async function handleApi(req, res, urlObj, config) {
     }
 
     if (req.method === "GET" && urlObj.pathname === "/api/db") {
-        const data = await readRemoteDb();
-        await writeLog(app, "INFO", "API GET /api/db", { count: Array.isArray(data) ? data.length : null });
+        const liveData = await getLiveDatabaseFromWindow();
+        if (Array.isArray(liveData)) {
+            writeJson(res, 200, liveData);
+            return;
+        }
+
+        const data = await readServerDatabase(app, config.port);
         writeJson(res, 200, data);
         return;
     }
@@ -304,8 +325,14 @@ async function handleApi(req, res, urlObj, config) {
     if (req.method === "PUT" && urlObj.pathname === "/api/db") {
         const body = await readBody(req);
         const parsed = JSON.parse(body || "[]");
-        await writeRemoteDb(parsed);
-        await writeLog(app, "INFO", "API PUT /api/db", { count: Array.isArray(parsed) ? parsed.length : null });
+
+        const appliedLive = await setLiveDatabaseToWindow(parsed);
+        if (!appliedLive) {
+            await writeServerDatabase(app, config.port, parsed);
+        } else {
+            await savePersistedDb(app, parsed);
+        }
+
         writeJson(res, 200, { success: true });
         return;
     }
@@ -360,6 +387,57 @@ async function handleStatic(req, res, urlObj, config) {
     }
 }
 
+async function getLiveDatabaseFromWindow() {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return null;
+    }
+
+    try {
+        return await mainWindow.webContents.executeJavaScript(`
+            (() => {
+                if (typeof database !== "undefined" && Array.isArray(database)) {
+                    return JSON.parse(JSON.stringify(database));
+                }
+                return null;
+            })()
+        `);
+    } catch (err) {
+        console.error("[live-db] get", err);
+        return null;
+    }
+}
+
+async function setLiveDatabaseToWindow(data) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        return false;
+    }
+
+    const payload = JSON.stringify(data);
+
+    try {
+        await mainWindow.webContents.executeJavaScript(`
+            (() => {
+                const nextData = ${payload};
+                if (!Array.isArray(nextData)) {
+                    throw new Error("Il database deve essere un array.");
+                }
+                database = dedupeIds(nextData.map((item, i) => normalizeItem(item, i)));
+                saveMeta({
+                    lastLoadedAt: new Date().toISOString(),
+                    lastImportedName: "remote-api"
+                });
+                render();
+                return true;
+            })()
+        `);
+
+        return true;
+    } catch (err) {
+        console.error("[live-db] set", err);
+        return false;
+    }
+}
+
 async function routeRequest(req, res) {
     const config = loadServerConfig();
     const urlObj = new URL(req.url, "http://127.0.0.1");
@@ -384,7 +462,6 @@ async function stopLocalServerInternal() {
     });
     localServer = null;
     serverState.running = false;
-    await writeLog(app, "INFO", "Server locale fermato");
     sendMenuAction("serverStopped");
     return { success: true };
 }
@@ -418,7 +495,6 @@ async function startLocalServerInternal() {
         port: config.port,
         ip: getPreferredIp()
     };
-    await writeLog(app, "INFO", "Server locale avviato", { port: serverState.port, ip: serverState.ip });
     sendMenuAction("serverStarted:" + serverState.port + ":" + serverState.ip);
     return { success: true, running: true, port: serverState.port, ip: serverState.ip };
 }
@@ -551,33 +627,37 @@ app.whenReady().then(async () => {
             return { success: false, error: err.message };
         }
     });
-    ipcMain.handle("serverdb:path", async () => {
+    ipcMain.handle("state:get-db", async () => {
         try {
-            await ensureDbFile(app);
-    await ensureLogFile(app);
-    await writeLog(app, "INFO", "Applicazione avviata");
-            return { success: true, filePath: dbFilePath(app) };
+            return { success: true, data: await loadPersistedDb(app) };
         } catch (err) {
             return { success: false, error: err.message };
         }
     });
-    ipcMain.handle("serverdb:get", async () => {
+    ipcMain.handle("state:set-db", async (_event, data) => {
         try {
-            return { success: true, data: await readDb(app) };
+            await savePersistedDb(app, data);
+            return { success: true, filePath: localDbPath(app) };
         } catch (err) {
             return { success: false, error: err.message };
         }
     });
-    ipcMain.handle("serverdb:set", async (_event, data) => {
+    ipcMain.handle("state:get-datasource", async () => {
         try {
-            const filePath = await writeDb(app, data);
-            await writeLog(app, "INFO", "Database server aggiornato", { filePath, count: Array.isArray(data) ? data.length : null });
-            return { success: true, filePath };
+            return { success: true, data: loadPersistedDatasource(app) };
         } catch (err) {
-            await writeLog(app, "ERROR", "Errore aggiornamento database server", { error: err.message });
             return { success: false, error: err.message };
         }
-    });    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
+    });
+    ipcMain.handle("state:set-datasource", async (_event, data) => {
+        try {
+            const saved = await savePersistedDatasource(app, data || {});
+            return { success: true, data: saved };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
     ipcMain.handle("folders:set-config", async (_event, config) => {
         try {
             const saved = await saveFolderPrefs(config || {});
@@ -649,45 +729,6 @@ app.whenReady().then(async () => {
     ipcMain.handle("ftp:test", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
     ipcMain.handle("ftp:download", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
     ipcMain.handle("ftp:upload", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
-
-    try { ipcMain.removeHandler("log:write"); } catch {}
-    try { ipcMain.removeHandler("log:path"); } catch {}
-    try { ipcMain.removeHandler("log:tail"); } catch {}
-    try { ipcMain.removeHandler("log:clear"); } catch {}
-
-    ipcMain.handle("log:write", async (_event, level, message, meta) => {
-        try {
-            const filePath = await writeLog(app, level, message, meta || null);
-            return { success: true, filePath };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:path", async () => {
-        try {
-            await ensureLogFile(app);
-            return { success: true, filePath: logFilePath(app) };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:tail", async (_event, maxLines = 300) => {
-        try {
-            const data = await readLogTail(app, maxLines);
-            return { success: true, ...data };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:clear", async () => {
-        try {
-            const filePath = await clearLog(app);
-            await writeLog(app, "INFO", "Log svuotato da interfaccia");
-            return { success: true, filePath };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
 
     createWindow();
 

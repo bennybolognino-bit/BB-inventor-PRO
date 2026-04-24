@@ -636,7 +636,6 @@
         <button class="tab-btn" type="button" data-tab-btn="inventory">Inventario <span class="tab-badge" id="tabBadgeInventory">0</span></button>
         <button class="tab-btn" type="button" data-tab-btn="movements">Movimenti <span class="tab-badge" id="tabBadgeMovements">0</span></button>
         <button class="tab-btn" type="button" data-tab-btn="settings">Impostazioni</button>
-<button class="tab-btn" type="button" data-tab-btn="diagnostics">Diagnostica</button>
     </nav>
 
     <!-- DASHBOARD -->
@@ -901,43 +900,6 @@
                 <span>Anagrafiche gestite</span>
             </article>
         </div>
-    </section>
-
-
-    <section class="panel" data-tab-section="diagnostics">
-        <div class="panel-head">
-            <div><h2>Diagnostica</h2><p>Log applicativo locale e ultimi eventi registrati.</p></div>
-            <div class="actions">
-                <button class="btn-secondary" id="refreshDiagnosticsBtn" type="button">Aggiorna</button>
-                <button class="btn-secondary" id="copyDiagnosticsBtn" type="button">Copia log</button>
-                <button class="btn-secondary" id="exportDiagnosticsBtn" type="button">Esporta log</button>
-                <button class="btn-danger" id="clearDiagnosticsBtn" type="button">Svuota log</button>
-            </div>
-        </div>
-        <div class="field">
-            <label for="diagnosticsLogPath">Percorso log</label>
-            <input id="diagnosticsLogPath" type="text" readonly>
-        </div>
-        <div class="filters" style="margin-top:12px">
-            <div class="field">
-                <label for="diagnosticsLevelFilter">Livello</label>
-                <select id="diagnosticsLevelFilter">
-                    <option value="">Tutti</option>
-                    <option value="INFO">INFO</option>
-                    <option value="WARNING">WARNING</option>
-                    <option value="ERROR">ERROR</option>
-                </select>
-            </div>
-            <div class="field">
-                <label for="diagnosticsSearch">Cerca</label>
-                <input id="diagnosticsSearch" type="text" placeholder="Filtra per testo…">
-            </div>
-        </div>
-        <div class="field" style="margin-top:12px">
-            <label for="diagnosticsLogView">Ultime righe</label>
-            <pre id="diagnosticsLogView" style="min-height:320px;max-height:520px;overflow:auto;margin:0;padding:12px;border:1px solid var(--line);border-radius:12px;background:#060606;color:#d7e0d7;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.8rem;line-height:1.45;white-space:pre-wrap"></pre>
-        </div>
-        <div id="diagnosticsLogMeta" style="margin-top:10px;color:var(--muted);font-size:.8rem"></div>
     </section>
 
 </div><!-- /.app -->
@@ -1399,7 +1361,6 @@ const DEFAULT_SETTINGS = {
 
 let database        = [];
 let settings        = clone(DEFAULT_SETTINGS);
-let diagnosticsLogLines = [];
 let selectedAssetIds = new Set();
 let activeTab       = "dashboard";
 let unsavedChanges  = false;
@@ -1562,8 +1523,7 @@ function cacheDom() {
         "dsHttpUrl","dsHttpToken","dsRemoteUrl",
         "dsFtpHost","dsFtpPort","dsFtpUser","dsFtpPass","dsFtpPath","dsFtpTls",
         "dsGdriveToken","dsGdriveFileId","dsDropboxToken","dsDropboxPath",
-        "dsOnedriveToken","dsOnedrivePath","dsUncPath",
-        "refreshDiagnosticsBtn","copyDiagnosticsBtn","clearDiagnosticsBtn","diagnosticsLogPath","diagnosticsLogView","diagnosticsLogMeta"
+        "dsOnedriveToken","dsOnedrivePath","dsUncPath"
     ];
     ids.forEach(id => { dom[id] = document.getElementById(id); });
     dom.tabButtons  = [...document.querySelectorAll("[data-tab-btn]")];
@@ -3657,8 +3617,6 @@ window.removeStatus           = removeStatus;
             const remote = await loadFromDatasource();
             if (Array.isArray(remote)) {
                 database = dedupeIds(remote.map((item, i) => normalizeItem(item, i)));
-const recordStateEl = document.getElementById("filterRecordState");
-if (recordStateEl) recordStateEl.value = "all";
                 try {
                     localStorage.setItem("rn_inventory", JSON.stringify(database));
                 } catch (e) {}
@@ -3670,121 +3628,6 @@ if (recordStateEl) recordStateEl.value = "all";
             if (attempts > 30) clearInterval(timer);
         }
     }, 500);
-})();
-</script>
-<script>
-/* BB_DIAGNOSTICS_BOOTSTRAP_V1 */
-(() => {
-    if (!window.electronAPI) return;
-
-    let diagnosticsBusy = false;
-
-    async function refreshDiagnosticsPanel() {
-        if (diagnosticsBusy) return;
-        diagnosticsBusy = true;
-
-        try {
-            const pathEl = document.getElementById("diagnosticsLogPath");
-            const viewEl = document.getElementById("diagnosticsLogView");
-            const metaEl = document.getElementById("diagnosticsLogMeta");
-            if (!viewEl) return;
-
-            const [pathRes, tailRes] = await Promise.all([
-                window.electronAPI.getLogPath(),
-                window.electronAPI.getLogTail(300)
-            ]);
-
-            if (pathEl) {
-                pathEl.value = pathRes?.filePath || "";
-            }
-
-            if (!tailRes?.success) {
-                viewEl.textContent = "Errore lettura log: " + (tailRes?.error || "sconosciuto");
-                if (metaEl) metaEl.textContent = "";
-                return;
-            }
-
-            const lines = Array.isArray(tailRes.lines) ? tailRes.lines : [];
-            viewEl.textContent = lines.length ? lines.join("\n") : "Nessun evento registrato.";
-            if (metaEl) {
-                metaEl.textContent = "Righe totali: " + (tailRes.totalLines || 0) + " · ultime: " + lines.length;
-            }
-        } catch (err) {
-            const viewEl = document.getElementById("diagnosticsLogView");
-            if (viewEl) viewEl.textContent = "Errore lettura log: " + err.message;
-        } finally {
-            diagnosticsBusy = false;
-        }
-    }
-
-    async function copyDiagnosticsPanel() {
-        const viewEl = document.getElementById("diagnosticsLogView");
-        if (!viewEl) return;
-        try {
-            await navigator.clipboard.writeText(viewEl.textContent || "");
-            if (typeof toast === "function") toast("Log copiato negli appunti.", "success");
-        } catch (err) {
-            if (typeof toast === "function") toast("Errore copia log: " + err.message, "error");
-        }
-    }
-
-    async function clearDiagnosticsPanel() {
-        try {
-            const res = await window.electronAPI.clearLog();
-            if (!res?.success) {
-                if (typeof toast === "function") toast("Errore svuotamento log: " + (res?.error || "sconosciuto"), "error");
-                return;
-            }
-            if (typeof toast === "function") toast("Log svuotato.", "success");
-            await refreshDiagnosticsPanel();
-        } catch (err) {
-            if (typeof toast === "function") toast("Errore svuotamento log: " + err.message, "error");
-        }
-    }
-
-    function wireDiagnosticsPanel() {
-        const refreshBtn = document.getElementById("refreshDiagnosticsBtn");
-        const copyBtn = document.getElementById("copyDiagnosticsBtn");
-        const clearBtn = document.getElementById("clearDiagnosticsBtn");
-        const diagTabBtn = document.querySelector('[data-tab-btn="diagnostics"]');
-
-        if (refreshBtn && !refreshBtn.dataset.bbDiagBound) {
-            refreshBtn.dataset.bbDiagBound = "1";
-            refreshBtn.addEventListener("click", refreshDiagnosticsPanel);
-        }
-
-        if (copyBtn && !copyBtn.dataset.bbDiagBound) {
-            copyBtn.dataset.bbDiagBound = "1";
-            copyBtn.addEventListener("click", copyDiagnosticsPanel);
-        }
-
-        if (clearBtn && !clearBtn.dataset.bbDiagBound) {
-            clearBtn.dataset.bbDiagBound = "1";
-            clearBtn.addEventListener("click", clearDiagnosticsPanel);
-        }
-
-        if (diagTabBtn && !diagTabBtn.dataset.bbDiagBound) {
-            diagTabBtn.dataset.bbDiagBound = "1";
-            diagTabBtn.addEventListener("click", () => {
-                setTimeout(refreshDiagnosticsPanel, 150);
-            });
-        }
-
-        setTimeout(refreshDiagnosticsPanel, 1200);
-
-        setInterval(() => {
-            const section = document.querySelector('[data-tab-section="diagnostics"]');
-            if (section && section.offsetParent !== null) {
-                refreshDiagnosticsPanel();
-            }
-        }, 3000);
-    }
-
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", wireDiagnosticsPanel, { once: true });
-    } else {
-        wireDiagnosticsPanel();
-    }
 })();
 </script>
 </body>

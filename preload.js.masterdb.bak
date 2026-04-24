@@ -6,30 +6,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
     startLocalServer: () => ipcRenderer.invoke("server:start"),
     stopLocalServer: () => ipcRenderer.invoke("server:stop"),
     getServerStatus: () => ipcRenderer.invoke("server:status"),
-
     readFile: (filePath, encoding) => ipcRenderer.invoke("fs:read-file", filePath, encoding),
     writeFile: (filePath, data, encoding) => ipcRenderer.invoke("fs:write-file", filePath, data, encoding),
-
     ftpTest: (config) => ipcRenderer.invoke("ftp:test", config),
     ftpDownload: (config) => ipcRenderer.invoke("ftp:download", config),
     ftpUpload: (config, data) => ipcRenderer.invoke("ftp:upload", config, data),
-
     saveBufferDialog: (payload) => ipcRenderer.invoke("dialog:save-buffer", payload),
     openJsonDialog: () => ipcRenderer.invoke("dialog:open-json"),
-
     getFolderPrefs: () => ipcRenderer.invoke("folders:get-config"),
     setFolderPrefs: (config) => ipcRenderer.invoke("folders:set-config", config),
     pickDirectory: (payload) => ipcRenderer.invoke("dialog:pick-directory", payload),
-
-    getServerDbPath: () => ipcRenderer.invoke("serverdb:path"),
-    getServerDb: () => ipcRenderer.invoke("serverdb:get"),
-    setServerDb: (data) => ipcRenderer.invoke("serverdb:set", data),
-
-    writeLog: (level, message, meta) => ipcRenderer.invoke("log:write", level, message, meta),
-    getLogPath: () => ipcRenderer.invoke("log:path"),
-    getLogTail: (maxLines) => ipcRenderer.invoke("log:tail", maxLines),
-    clearLog: () => ipcRenderer.invoke("log:clear"),
-
+    getMasterDatabase: () => ipcRenderer.invoke("db:get"),
+    setMasterDatabase: (data) => ipcRenderer.invoke("db:set", data),
+    getMasterDatabasePath: () => ipcRenderer.invoke("db:path"),
     onMenuAction: (callback) => {
         if (typeof callback !== "function") return;
         const listener = (_event, action) => callback(action);

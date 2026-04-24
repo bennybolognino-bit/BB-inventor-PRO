@@ -6,7 +6,7 @@ const os = require("os");
 const path = require("path");
 const { URL } = require("url");
 const { dbFilePath, ensureDbFile, readDb, writeDb } = require("./server-db");
-const { logFilePath, ensureLogFile, writeLog, readLogTail, clearLog } = require("./logger");
+const { logFilePath, ensureLogFile, writeLog } = require("./logger");
 
 const APP_HTML = path.join(__dirname, "BB_Inventor_PRO.html");
 const APP_ROOT = __dirname;
@@ -577,7 +577,24 @@ app.whenReady().then(async () => {
             await writeLog(app, "ERROR", "Errore aggiornamento database server", { error: err.message });
             return { success: false, error: err.message };
         }
-    });    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
+    });
+    ipcMain.handle("log:write", async (_event, level, message, meta) => {
+        try {
+            const filePath = await writeLog(app, String(level || "INFO").toUpperCase(), String(message || ""), meta || null);
+            return { success: true, filePath };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("log:path", async () => {
+        try {
+            await ensureLogFile(app);
+            return { success: true, filePath: logFilePath(app) };
+        } catch (err) {
+            return { success: false, error: err.message };
+        }
+    });
+    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
     ipcMain.handle("folders:set-config", async (_event, config) => {
         try {
             const saved = await saveFolderPrefs(config || {});
@@ -649,45 +666,6 @@ app.whenReady().then(async () => {
     ipcMain.handle("ftp:test", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
     ipcMain.handle("ftp:download", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
     ipcMain.handle("ftp:upload", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
-
-    try { ipcMain.removeHandler("log:write"); } catch {}
-    try { ipcMain.removeHandler("log:path"); } catch {}
-    try { ipcMain.removeHandler("log:tail"); } catch {}
-    try { ipcMain.removeHandler("log:clear"); } catch {}
-
-    ipcMain.handle("log:write", async (_event, level, message, meta) => {
-        try {
-            const filePath = await writeLog(app, level, message, meta || null);
-            return { success: true, filePath };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:path", async () => {
-        try {
-            await ensureLogFile(app);
-            return { success: true, filePath: logFilePath(app) };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:tail", async (_event, maxLines = 300) => {
-        try {
-            const data = await readLogTail(app, maxLines);
-            return { success: true, ...data };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:clear", async () => {
-        try {
-            const filePath = await clearLog(app);
-            await writeLog(app, "INFO", "Log svuotato da interfaccia");
-            return { success: true, filePath };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
 
     createWindow();
 

@@ -1,0 +1,70 @@
+BB ADBV PRO
+Il controllo professionale tra pianificato e trasmesso
+
+BB ADBV PRO è il software pensato per chi deve verificare in modo rapido, chiaro e affidabile il rapporto tra Ex Ante ed Ex Post.
+Nasce per trasformare un’attività spesso manuale, dispersiva e poco trasparente in un processo di controllo operativo semplice da leggere e immediato da utilizzare.
+
+Il sistema acquisisce file provenienti da fonti diverse, li interpreta automaticamente e restituisce un confronto dettagliato tra:
+
+- Ex Ante 1
+- Ex Ante 2
+- Piano complessivo
+- Trasmesso reale
+
+Il risultato è una visione completa degli scostamenti, delle differenze orarie e dei possibili sforamenti rispetto alle soglie definite.
+
+Perché scegliere BB ADBV PRO
+
+Con BB ADBV PRO il controllo non si limita al dato finale.
+Il software mostra anche come quel dato è stato costruito, rendendo l’analisi più trasparente, verificabile e professionale.
+
+Per ogni file utilizzato è possibile visualizzare:
+
+- file effettivamente in uso
+- directory di provenienza
+- ora dell’ultimo aggiornamento
+- tipo di analisi applicata
+- origine della durata utilizzata nel confronto
+
+Questo consente di lavorare con maggiore sicurezza, ridurre le ambiguità operative e migliorare il controllo qualità.
+
+Funzionalità principali
+
+- confronto tra pianificato e trasmesso reale
+- gestione di file eterogenei e parser configurabili
+- lettura di dati dettagliati o aggregati
+- monitoraggio continuo delle directory operative
+- aggiornamento automatico dei risultati
+- visualizzazione tramite tabelle, grafici e riepiloghi
+- esportazione dei risultati
+- controllo di scostamenti, extra, riduzioni e sforamenti
+- supporto a regole di analisi basate su righe, parole chiave e blocchi
+
+Vantaggi operativi
+
+BB ADBV PRO permette di:
+
+- ridurre i tempi di verifica manuale
+- aumentare l’affidabilità del controllo
+- avere una lettura immediata delle differenze tra piano e trasmesso
+- individuare rapidamente anomalie e scostamenti
+- disporre di uno strumento chiaro per attività di controllo, audit e verifica interna
+
+A chi si rivolge
+
+La soluzione è ideale per:
+
+- broadcaster
+- concessionarie pubblicitarie
+- reparti traffico e pianificazione
+- controllo palinsesto
+- uffici commerciali e amministrativi
+- strutture che hanno bisogno di monitorare con precisione la corrispondenza tra previsto e trasmesso
+
+Un software pensato per il controllo reale
+
+BB ADBV PRO non è un semplice lettore di file.
+È uno strumento di analisi e controllo operativo progettato per offrire una visione concreta, leggibile e tracciabile del rapporto tra ciò che era stato pianificato e ciò che è stato realmente trasmesso.
+
+BB ADBV PRO
+Più controllo. Più trasparenza. Più affidabilità operativa

@@ -90,23 +90,53 @@
             const result = await window.electronAPI.openJsonDialog();
             if (!result?.success) return;
 
-            const input = event.currentTarget;
-            const file = new File([result.data], result.name || "database.json", { type: "application/json" });
-            const dataTransfer = new DataTransfer();
-            dataTransfer.items.add(file);
-            input.files = dataTransfer.files;
-            input.dispatchEvent(new Event("change", { bubbles: true }));
+            const parsed = JSON.parse(result.data);
+            if (!Array.isArray(parsed)) {
+                throw new Error("Non è un array JSON valido");
+            }
+
+            const nextData = parsed.map((item, i) => normalizeItem(item, i));
+            const confirmed = await askConfirm(
+                "Sostituire il database con " + nextData.length + " record dal file «" + (result.name || "database.json") + "»?",
+                "Carica backup"
+            );
+            if (!confirmed) {
+                return;
+            }
+
+            showLoading("Importazione…");
+            database = dedupeIds(nextData);
+            await saveDatabase(false);
+            saveMeta({
+                lastLoadedAt: new Date().toISOString(),
+                lastImportedName: result.name || "database.json"
+            });
+            hideLoading();
+            render();
+            toast("Importazione completata (" + database.length + " asset).", "success");
         } catch (err) {
             console.error("[electron-bootstrap] importFromDialog", err);
-            if (typeof toast === "function") toast("Errore apertura file: " + err.message, "error");
+            hideLoading();
+            if (typeof toast === "function") toast("File non valido o corrotto: " + err.message, "error");
+        } finally {
+            if (typeof dom !== "undefined" && dom.importFile) {
+                dom.importFile.value = "";
+            }
         }
     }
 
     function patchImportInput() {
         const input = document.getElementById("importFile");
-        if (!input || input.dataset.bbElectronPatched === "1") return;
-        input.dataset.bbElectronPatched = "1";
-        input.addEventListener("click", importFromDialog, true);
+        if (input && input.dataset.bbElectronPatched !== "1") {
+            input.dataset.bbElectronPatched = "1";
+            input.addEventListener("click", importFromDialog, true);
+        }
+
+        const button = document.getElementById("importJsonBtn");
+        if (button && button.dataset.bbElectronPatched !== "1") {
+            button.dataset.bbElectronPatched = "1";
+            button.addEventListener("click", importFromDialog, true);
+        }
     }
 
     function folderPanelTemplate() {
@@ -253,173 +283,61 @@
 })();
 
 (() => {
-    if (window.__bbRemoteHttpForceLoadInstalled) return;
-    window.__bbRemoteHttpForceLoadInstalled = true;
+    if (!window.electronAPI || window.__bbServerStateSyncInstalled) return;
+    window.__bbServerStateSyncInstalled = true;
 
-    async function forceRemoteHttpLoad() {
+    async function pushDatabaseState() {
         try {
-            const isHttpPage = window.location.protocol === "http:" || window.location.protocol === "https:";
-            const isElectron = !!window.electronAPI;
-
-            if (!isHttpPage || isElectron) return;
-            if (typeof normalizeItem !== "function") return;
-            if (typeof render !== "function") return;
-
-            const res = await fetch(window.location.origin + "/api/db", {
-                credentials: "include"
-            });
-
-            if (!res.ok) {
-                throw new Error("HTTP " + res.status);
-            }
-
-            const remoteData = await res.json();
-            if (!Array.isArray(remoteData)) {
-                throw new Error("Il database remoto non è un array valido.");
-            }
-
-            database = dedupeIds(remoteData.map((item, i) => normalizeItem(item, i)));
-
-            try {
-                localStorage.setItem("rn_datasource", JSON.stringify({
-                    mode: "http",
-                    httpUrl: window.location.origin + "/api",
-                    httpToken: "",
-                    autoload: true
-                }));
-                localStorage.setItem("rn_inventory_db", JSON.stringify(database));
-            } catch {}
-
-            if (typeof saveMeta === "function") {
-                saveMeta({
-                    lastLoadedAt: new Date().toISOString(),
-                    lastImportedName: "remote-http-api"
-                });
-            }
-            if (typeof refreshMetaUI === "function") refreshMetaUI();
-            render();
-        } catch (err) {
-            console.error("[electron-bootstrap] forceRemoteHttpLoad", err);
-        }
-    }
-
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", () => {
-            setTimeout(forceRemoteHttpLoad, 1200);
-        }, { once: true });
-    } else {
-        setTimeout(forceRemoteHttpLoad, 1200);
-    }
-})();
-(() => {
-    if (!window.electronAPI || window.__bbServerLiveRefreshInstalled) return;
-    window.__bbServerLiveRefreshInstalled = true;
-
-    let lastServerDbHash = null;
-    let refreshBusy = false;
-
-    function safeHash(v) {
-        try { return JSON.stringify(v); } catch { return ""; }
-    }
-
-    async function refreshFromServerDb() {
-        if (refreshBusy) return;
-        refreshBusy = true;
-
-        try {
-            const res = await window.electronAPI.getServerDb();
-            const remoteDb = Array.isArray(res?.data) ? res.data : [];
-            const incomingHash = safeHash(remoteDb);
-
-            if (lastServerDbHash === null) {
-                lastServerDbHash = incomingHash;
-                return;
-            }
-
-            if (incomingHash !== lastServerDbHash) {
-                database = dedupeIds(remoteDb.map((item, i) => normalizeItem(item, i)));
-                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(database)); } catch {}
-                if (typeof render === "function") render();
-                if (typeof refreshMetaUI === "function") refreshMetaUI();
-                lastServerDbHash = incomingHash;
+            if (typeof database !== "undefined" && Array.isArray(database)) {
+                await window.electronAPI.setPersistedDatabase(database);
             }
         } catch (err) {
-            console.error("[electron-bootstrap] refreshFromServerDb", err);
-        } finally {
-            refreshBusy = false;
+            console.error("[electron-bootstrap] pushDatabaseState", err);
         }
     }
 
-    function initServerLiveRefresh() {
-        if (typeof database !== "undefined" && Array.isArray(database)) {
-            lastServerDbHash = safeHash(database);
-        }
-
-        setInterval(refreshFromServerDb, 3000);
-    }
-
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", initServerLiveRefresh, { once: true });
-    } else {
-        initServerLiveRefresh();
-    }
-})();
-(() => {
-    if (!window.electronAPI || window.__bbLocalToServerSyncInstalled) return;
-    window.__bbLocalToServerSyncInstalled = true;
-
-    async function pushLocalDbToServer() {
+    async function pushDatasourceState() {
         try {
-            if (Array.isArray(database)) {
-                await window.electronAPI.setServerDb(database);
+            if (typeof datasource !== "undefined" && datasource && typeof datasource === "object") {
+                await window.electronAPI.setPersistedDatasource(datasource);
             }
         } catch (err) {
-            console.error("[electron-bootstrap] pushLocalDbToServer", err);
+            console.error("[electron-bootstrap] pushDatasourceState", err);
         }
     }
 
-    function installLocalToServerSync() {
-        if (typeof saveDatabase === "function" && !saveDatabase.__bbLocalToServerWrapped) {
+    function installServerStateSync() {
+        if (typeof saveDatabase === "function" && !saveDatabase.__bbServerWrapped) {
             const originalSaveDatabase = saveDatabase;
             saveDatabase = async function(...args) {
                 const result = await originalSaveDatabase.apply(this, args);
-                await pushLocalDbToServer();
+                await pushDatabaseState();
                 return result;
             };
-            saveDatabase.__bbLocalToServerWrapped = true;
+            saveDatabase.__bbServerWrapped = true;
         }
+
+        if (typeof saveDatasource === "function" && !saveDatasource.__bbServerWrapped) {
+            const originalSaveDatasource = saveDatasource;
+            saveDatasource = function(...args) {
+                const result = originalSaveDatasource.apply(this, args);
+                Promise.resolve(pushDatasourceState()).catch(console.error);
+                return result;
+            };
+            saveDatasource.__bbServerWrapped = true;
+        }
+
+        setTimeout(() => {
+            pushDatasourceState();
+            pushDatabaseState();
+        }, 1500);
     }
 
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", installLocalToServerSync, { once: true });
+        document.addEventListener("DOMContentLoaded", installServerStateSync, { once: true });
     } else {
-        installLocalToServerSync();
-    }
-})();
-(() => {
-    if (!window.electronAPI || window.__bbRendererLoggingInstalled) return;
-    window.__bbRendererLoggingInstalled = true;
-
-    function log(level, message, meta) {
-        try {
-            window.electronAPI.writeLog(level, message, meta || null);
-        } catch {}
+        installServerStateSync();
     }
 
-    window.addEventListener("error", (event) => {
-        log("ERROR", "Renderer error", {
-            message: event.message,
-            source: event.filename,
-            line: event.lineno,
-            column: event.colno
-        });
-    });
-
-    window.addEventListener("unhandledrejection", (event) => {
-        log("ERROR", "Unhandled promise rejection", {
-            reason: String(event.reason)
-        });
-    });
-
-    log("INFO", "Renderer avviato");
+    setTimeout(installServerStateSync, 2500);
 })();

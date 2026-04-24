@@ -1,21 +1,17 @@
-const { app, BrowserWindow, ipcMain, dialog } = require("electron");
+﻿const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const fs = require("fs");
 const fsp = fs.promises;
 const http = require("http");
 const os = require("os");
 const path = require("path");
 const { URL } = require("url");
-const { dbFilePath, ensureDbFile, readDb, writeDb } = require("./server-db");
-const { logFilePath, ensureLogFile, writeLog, readLogTail, clearLog } = require("./logger");
 
 const APP_HTML = path.join(__dirname, "BB_Inventor_PRO.html");
 const APP_ROOT = __dirname;
 const BOOTSTRAP_JS = path.join(__dirname, "electron-bootstrap.js");
 
 let mainWindow = null;
-let splashWindow = null;
 let localServer = null;
-let splashShownAt = 0;
 let serverState = {
     running: false,
     port: 3001,
@@ -241,11 +237,20 @@ function readBody(req) {
 }
 
 async function readRemoteDb() {
-    return readDb(app);
+    try {
+        const raw = await fsp.readFile(remoteDbPath(), "utf8");
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+        if (err.code === "ENOENT") return [];
+        throw err;
+    }
 }
 
 async function writeRemoteDb(data) {
-    return writeDb(app, data);
+    if (!Array.isArray(data)) throw new Error("Il database remoto deve essere un array JSON.");
+    await fsp.mkdir(path.dirname(remoteDbPath()), { recursive: true });
+    await fsp.writeFile(remoteDbPath(), JSON.stringify(data, null, 2), "utf8");
 }
 
 async function injectedHtml() {
@@ -296,7 +301,6 @@ async function handleApi(req, res, urlObj, config) {
 
     if (req.method === "GET" && urlObj.pathname === "/api/db") {
         const data = await readRemoteDb();
-        await writeLog(app, "INFO", "API GET /api/db", { count: Array.isArray(data) ? data.length : null });
         writeJson(res, 200, data);
         return;
     }
@@ -305,7 +309,6 @@ async function handleApi(req, res, urlObj, config) {
         const body = await readBody(req);
         const parsed = JSON.parse(body || "[]");
         await writeRemoteDb(parsed);
-        await writeLog(app, "INFO", "API PUT /api/db", { count: Array.isArray(parsed) ? parsed.length : null });
         writeJson(res, 200, { success: true });
         return;
     }
@@ -384,7 +387,6 @@ async function stopLocalServerInternal() {
     });
     localServer = null;
     serverState.running = false;
-    await writeLog(app, "INFO", "Server locale fermato");
     sendMenuAction("serverStopped");
     return { success: true };
 }
@@ -418,52 +420,17 @@ async function startLocalServerInternal() {
         port: config.port,
         ip: getPreferredIp()
     };
-    await writeLog(app, "INFO", "Server locale avviato", { port: serverState.port, ip: serverState.ip });
     sendMenuAction("serverStarted:" + serverState.port + ":" + serverState.ip);
     return { success: true, running: true, port: serverState.port, ip: serverState.ip };
 }
 
-function createSplashWindow() {
-    splashShownAt = Date.now();
-
-    splashWindow = new BrowserWindow({
-        width: 920,
-        height: 560,
-        frame: false,
-        resizable: false,
-        maximizable: false,
-        minimizable: false,
-        alwaysOnTop: true,
-        autoHideMenuBar: true,
-        backgroundColor: "#080808",
-        show: true,
-        webPreferences: {
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: false
-        }
-    });
-
-    const splashPath = path.join(__dirname, "splash_preview.html");
-    if (fs.existsSync(splashPath)) {
-        splashWindow.loadFile(splashPath);
-    } else {
-        splashWindow.loadURL('data:text/html,<html><body style="margin:0;background:#080808"></body></html>');
-    }
-
-    splashWindow.on("closed", () => {
-        splashWindow = null;
-    });
-}
-
-function createMainWindow() {
+function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1600,
         height: 980,
         minWidth: 1280,
         minHeight: 800,
         backgroundColor: "#080808",
-        show: false,
         webPreferences: {
             preload: path.join(__dirname, "preload.js"),
             contextIsolation: true,
@@ -476,31 +443,7 @@ function createMainWindow() {
         injectElectronBootstrap();
     });
 
-    mainWindow.once("ready-to-show", () => {
-        const minSplashMs = 5100;
-        const elapsed = Date.now() - splashShownAt;
-        const wait = Math.max(0, minSplashMs - elapsed);
-
-        setTimeout(() => {
-            if (splashWindow && !splashWindow.isDestroyed()) {
-                splashWindow.close();
-            }
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.show();
-            }
-        }, wait);
-    });
-
-    mainWindow.on("closed", () => {
-        mainWindow = null;
-    });
-
     mainWindow.loadFile(APP_HTML);
-}
-
-function createWindow() {
-    createSplashWindow();
-    createMainWindow();
 }
 
 app.whenReady().then(async () => {
@@ -551,33 +494,7 @@ app.whenReady().then(async () => {
             return { success: false, error: err.message };
         }
     });
-    ipcMain.handle("serverdb:path", async () => {
-        try {
-            await ensureDbFile(app);
-    await ensureLogFile(app);
-    await writeLog(app, "INFO", "Applicazione avviata");
-            return { success: true, filePath: dbFilePath(app) };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("serverdb:get", async () => {
-        try {
-            return { success: true, data: await readDb(app) };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("serverdb:set", async (_event, data) => {
-        try {
-            const filePath = await writeDb(app, data);
-            await writeLog(app, "INFO", "Database server aggiornato", { filePath, count: Array.isArray(data) ? data.length : null });
-            return { success: true, filePath };
-        } catch (err) {
-            await writeLog(app, "ERROR", "Errore aggiornamento database server", { error: err.message });
-            return { success: false, error: err.message };
-        }
-    });    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
+    ipcMain.handle("folders:get-config", async () => loadFolderPrefs());
     ipcMain.handle("folders:set-config", async (_event, config) => {
         try {
             const saved = await saveFolderPrefs(config || {});
@@ -649,45 +566,6 @@ app.whenReady().then(async () => {
     ipcMain.handle("ftp:test", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
     ipcMain.handle("ftp:download", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
     ipcMain.handle("ftp:upload", async () => ({ success: false, error: "FTP non ancora implementato in questa build Electron." }));
-
-    try { ipcMain.removeHandler("log:write"); } catch {}
-    try { ipcMain.removeHandler("log:path"); } catch {}
-    try { ipcMain.removeHandler("log:tail"); } catch {}
-    try { ipcMain.removeHandler("log:clear"); } catch {}
-
-    ipcMain.handle("log:write", async (_event, level, message, meta) => {
-        try {
-            const filePath = await writeLog(app, level, message, meta || null);
-            return { success: true, filePath };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:path", async () => {
-        try {
-            await ensureLogFile(app);
-            return { success: true, filePath: logFilePath(app) };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:tail", async (_event, maxLines = 300) => {
-        try {
-            const data = await readLogTail(app, maxLines);
-            return { success: true, ...data };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
-    ipcMain.handle("log:clear", async () => {
-        try {
-            const filePath = await clearLog(app);
-            await writeLog(app, "INFO", "Log svuotato da interfaccia");
-            return { success: true, filePath };
-        } catch (err) {
-            return { success: false, error: err.message };
-        }
-    });
 
     createWindow();
 

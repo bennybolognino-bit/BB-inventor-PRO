@@ -1,0 +1,46 @@
+appId: com.bennybolognino.bbinventorpro
+productName: "BB Inventor PRO"
+executableName: "BB Inventor PRO"
+
+directories:
+  output: dist
+  buildResources: build
+
+files:
+  - "BB_Inventor_PRO.html"
+  - "splash_preview.html"
+  - "main.js"
+  - "preload.js"
+  - "electron-bootstrap.js"
+  - "server-db.js"
+  - "logger.js"
+  - "package.json"
+  - "!dist/**"
+  - "!*.bak"
+
+extraMetadata:
+  main: main.js
+
+asar: true
+artifactName: "${productName}-${version}-Setup.${ext}"
+
+win:
+  icon: "build/icon.ico"
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: "BB Inventor PRO"
+  installerIcon: "build/installerIcon.ico"
+  uninstallerIcon: "build/uninstallerIcon.ico"
+  installerHeader: "build/installerHeader.bmp"
+  installerSidebar: "build/installerSidebar.bmp"
+  license: "build/license.txt"
+  deleteAppDataOnUninstall: false
